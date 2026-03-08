@@ -1,0 +1,335 @@
+import { useState, useMemo } from 'react';
+import Fuse from 'fuse.js';
+import { Search, ExternalLink, BookOpen, Layers, RefreshCw } from 'lucide-react';
+import initialArticlesData from './data/articles.json';
+import './index.css';
+
+const INTERSLAVIC_ALPHABET = [
+  { id: 'A', display: 'A а', keys: ['a', 'а'] },
+  { id: 'B', display: 'B б', keys: ['b', 'б'] },
+  { id: 'C', display: 'C ц', keys: ['c', 'ц'] },
+  { id: 'Č', display: 'Č ч', keys: ['č', 'ч'] },
+  { id: 'D', display: 'D д', keys: ['d', 'д'], exclude: ['dž', 'дж'] },
+  { id: 'Dž', display: 'Dž дж', keys: ['dž', 'дж'] },
+  { id: 'E', display: 'E е', keys: ['e', 'е'] },
+  { id: 'Ě', display: 'Ě є', keys: ['ě', 'є'] },
+  { id: 'F', display: 'F ф', keys: ['f', 'ф'] },
+  { id: 'G', display: 'G г', keys: ['g', 'г'] },
+  { id: 'H', display: 'H х', keys: ['h', 'х'] },
+  { id: 'I', display: 'I и', keys: ['i', 'и'] },
+  { id: 'J', display: 'J ј', keys: ['j', 'ј'] },
+  { id: 'K', display: 'K к', keys: ['k', 'к'] },
+  { id: 'L', display: 'L л', keys: ['l', 'л'], exclude: ['lj'] },
+  { id: 'Lj', display: 'Lj љ', keys: ['lj', 'љ'] },
+  { id: 'M', display: 'M м', keys: ['m', 'м'] },
+  { id: 'N', display: 'N н', keys: ['n', 'н'], exclude: ['nj'] },
+  { id: 'Nj', display: 'Nj њ', keys: ['nj', 'њ'] },
+  { id: 'O', display: 'O о', keys: ['o', 'о'] },
+  { id: 'P', display: 'P п', keys: ['p', 'п'] },
+  { id: 'R', display: 'R р', keys: ['r', 'р'] },
+  { id: 'S', display: 'S с', keys: ['s', 'с'] },
+  { id: 'Š', display: 'Š ш', keys: ['š', 'ш'] },
+  { id: 'T', display: 'T т', keys: ['t', 'т'] },
+  { id: 'U', display: 'U у', keys: ['u', 'у'] },
+  { id: 'V', display: 'V в', keys: ['v', 'в'] },
+  { id: 'Y', display: 'Y ы', keys: ['y', 'ы'] },
+  { id: 'Z', display: 'Z з', keys: ['z', 'з'] },
+  { id: 'Ž', display: 'Ž ж', keys: ['ž', 'ж'] },
+];
+
+function App() {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
+  const [activeLetter, setActiveLetter] = useState(null);
+
+  // Compute categories and counts
+  const categories = useMemo(() => {
+    const catMap = new Map();
+
+    // Default "All" category
+    catMap.set('All', articlesData.length);
+
+    articlesData.forEach(article => {
+      if (article.cleanCategories && article.cleanCategories.length > 0) {
+        article.cleanCategories.forEach(cat => {
+          catMap.set(cat, (catMap.get(cat) || 0) + 1);
+        });
+      } else {
+        catMap.set('Uncategorized', (catMap.get('Uncategorized') || 0) + 1);
+      }
+    });
+
+    // Sort categories by count descending, keeping "All" at the top
+    const sorted = Array.from(catMap.entries()).sort((a, b) => {
+      if (a[0] === 'All') return -1;
+      if (b[0] === 'All') return 1;
+      return b[1] - a[1];
+    });
+
+    // Only take top 30 categories to avoid cluttering the sidebar too much
+    return sorted.slice(0, 30);
+  }, []);
+
+  // Setup Fuse.js for search
+  const fuse = useMemo(() => {
+    return new Fuse(articlesData, {
+      keys: ['cleanTitle'],
+      threshold: 0.3,
+    });
+  }, []);
+
+  // Filter articles based on search term and category
+  const filteredArticles = useMemo(() => {
+    let result = articlesData;
+
+    if (searchTerm) {
+      const searchResults = fuse.search(searchTerm);
+      result = searchResults.map(r => r.item);
+    }
+
+    if (activeCategory !== 'All') {
+      result = result.filter(article => {
+        if (activeCategory === 'Uncategorized') {
+          return !article.cleanCategories || article.cleanCategories.length === 0;
+        }
+        return article.cleanCategories && article.cleanCategories.includes(activeCategory);
+      });
+    }
+
+    if (activeLetter) {
+      const letterObj = INTERSLAVIC_ALPHABET.find(l => l.id === activeLetter);
+      if (letterObj) {
+        result = result.filter(article => {
+          const t = article.cleanTitle.toLowerCase();
+          const startsWithInclude = letterObj.keys.some(k => t.startsWith(k));
+          const startsWithExclude = letterObj.exclude ? letterObj.exclude.some(ek => t.startsWith(ek)) : false;
+          return startsWithInclude && !startsWithExclude;
+        });
+      }
+    }
+
+    // Sort alphabetically by cleanTitle if no search term, otherwise keep Fuse relevance sort
+    if (!searchTerm) {
+      result = [...result].sort((a, b) => a.cleanTitle.localeCompare(b.cleanTitle));
+    }
+
+    return result;
+  }, [searchTerm, activeCategory, activeLetter, fuse, articlesData]);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    setRefreshStatus('Fetching article list...');
+
+    try {
+      const API_URL = 'https://incubator.wikimedia.org/w/api.php';
+      let pages = [];
+      let apcontinue = null;
+
+      while (true) {
+        const url = new URL(API_URL);
+        url.searchParams.set('action', 'query');
+        url.searchParams.set('list', 'allpages');
+        url.searchParams.set('apprefix', 'Wp/isv/');
+        url.searchParams.set('apnamespace', '0');
+        url.searchParams.set('aplimit', '500');
+        url.searchParams.set('format', 'json');
+        url.searchParams.set('origin', '*'); // required for CORS
+        if (apcontinue) {
+          url.searchParams.set('apcontinue', apcontinue);
+        }
+
+        const res = await fetch(url.toString());
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error.info || 'API Error');
+
+        if (data.query && data.query.allpages) {
+          pages.push(...data.query.allpages);
+        }
+
+        if (data.continue && data.continue.apcontinue) {
+          apcontinue = data.continue.apcontinue;
+        } else {
+          break;
+        }
+      }
+
+      setRefreshStatus(`Fetching categories for ${pages.length} articles...`);
+      const chunkSize = 50;
+
+      for (let i = 0; i < pages.length; i += chunkSize) {
+        setRefreshStatus(`Processing categories: ${Math.min(i + chunkSize, pages.length)} / ${pages.length}`);
+        const chunk = pages.slice(i, i + chunkSize);
+        const titles = chunk.map(p => p.title).join('|');
+
+        const url = new URL(API_URL);
+        url.searchParams.set('action', 'query');
+        url.searchParams.set('prop', 'categories');
+        url.searchParams.set('titles', titles);
+        url.searchParams.set('cllimit', 'max');
+        url.searchParams.set('format', 'json');
+        url.searchParams.set('origin', '*');
+
+        const res = await fetch(url.toString());
+        const data = await res.json();
+
+        if (data.query && data.query.pages) {
+          const pageMap = data.query.pages;
+          Object.values(pageMap).forEach(pInfo => {
+            const pageRef = pages.find(p => p.title === pInfo.title);
+            if (pageRef) {
+              pageRef.categories = (pInfo.categories || []).map(c => c.title);
+            }
+          });
+        }
+
+        // slight delay to avoid hammering the API
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+
+      // Process
+      pages.forEach(p => {
+        p.cleanTitle = p.title.replace('Wp/isv/', '');
+        p.cleanCategories = (p.categories || []).map(cat => {
+          return cat.replace(/^Category:(Wp\/isv\/)?/, '');
+        }).filter(c => !c.match(/incubator/i) && !c.match(/articles/i));
+      });
+
+      const validPages = pages.filter(p => !p.cleanTitle.includes('O_Wikipediji') && !p.cleanTitle.includes('Glavna_stranica'));
+
+      setArticlesData(validPages);
+      setRefreshStatus('');
+    } catch (e) {
+      console.error(e);
+      setRefreshStatus('Error refreshing data. Please try again.');
+      setTimeout(() => setRefreshStatus(''), 3000);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  return (
+    <div className="app-container">
+      {/* Header section */}
+      <header className="header">
+        <h1>Interslavic Wikipedia</h1>
+        <p>A catalogue of articles from the Incubator project.</p>
+        <button
+          className={`refresh-btn ${isRefreshing ? 'refreshing' : ''}`}
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+        >
+          <RefreshCw size={16} className={isRefreshing ? 'spin' : ''} />
+          {isRefreshing ? refreshStatus : 'Refresh List (Live)'}
+        </button>
+      </header>
+
+      {/* Modern Search Bar */}
+      <div className="search-container">
+        <div className="search-wrapper">
+          <Search className="search-icon" />
+          <input
+            type="text"
+            className="search-input"
+            placeholder="Search articles by title..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Alphabet Filter Bar */}
+      <div className="alphabet-container fade-in">
+        <button
+          className={`alphabet-btn ${activeLetter === null ? 'active' : ''}`}
+          onClick={() => setActiveLetter(null)}
+        >
+          All
+        </button>
+        {INTERSLAVIC_ALPHABET.map(letter => (
+          <button
+            key={letter.id}
+            className={`alphabet-btn ${activeLetter === letter.id ? 'active' : ''}`}
+            onClick={() => setActiveLetter(letter.id)}
+          >
+            {letter.display}
+          </button>
+        ))}
+      </div>
+
+      <main className="main-content">
+        {/* Category Sidebar */}
+        <aside className="category-sidebar">
+          <div className="category-title fade-in">
+            <Layers size={18} style={{ display: 'inline', marginRight: '8px', verticalAlign: 'text-bottom' }} />
+            Categories
+          </div>
+          <div className="category-list">
+            {categories.map(([cat, count], index) => (
+              <button
+                key={cat}
+                className={`category-pill fade-in ${activeCategory === cat ? 'active' : ''}`}
+                style={{ animationDelay: `${index * 0.03}s` }}
+                onClick={() => setActiveCategory(cat)}
+              >
+                <span>{cat.replace(/_/g, ' ')}</span>
+                <span className="count">{count}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* Article Grid Layout */}
+        <section className="article-grid-container fade-in">
+          <div className="grid-header">
+            <h2 className="grid-title">
+              {activeCategory === 'All' ? 'All Articles' : activeCategory.replace(/_/g, ' ')}
+            </h2>
+            <span className="article-count-label">
+              {filteredArticles.length} {filteredArticles.length === 1 ? 'article' : 'articles'}
+            </span>
+          </div>
+
+          {filteredArticles.length > 0 ? (
+            <div className="article-grid">
+              {filteredArticles.map((article, index) => (
+                <a
+                  href={`https://incubator.wikimedia.org/wiki/${article.title}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="article-card"
+                  key={article.pageid}
+                >
+                  <ExternalLink className="external-link-icon" size={20} />
+                  <h3 className="article-title">{article.cleanTitle.replace(/_/g, ' ')}</h3>
+
+                  <div className="card-categories">
+                    {article.cleanCategories && article.cleanCategories.slice(0, 3).map(cat => (
+                      <span className="card-category-tag" key={cat}>
+                        {cat.replace(/_/g, ' ')}
+                      </span>
+                    ))}
+                    {(!article.cleanCategories || article.cleanCategories.length === 0) && (
+                      <span className="card-category-tag" style={{ color: 'var(--text-muted)', background: 'var(--card-border)' }}>
+                        Uncategorized
+                      </span>
+                    )}
+                  </div>
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <BookOpen className="empty-state-icon" />
+              <h3>No articles found</h3>
+              <p>Try adjusting your search or category filter to find what you're looking for.</p>
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+export default App;

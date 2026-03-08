@@ -1,0 +1,688 @@
+import { useState, useMemo, useEffect } from 'react';
+import Fuse from 'fuse.js';
+import { Search, ExternalLink, BookOpen, Layers, RefreshCw, AlertCircle, TrendingUp, Moon, Sun } from 'lucide-react';
+import initialArticlesData from './data/articles.json';
+import StatisticsModal from './components/StatisticsModal';
+import { translations } from './translations';
+import './index.css';
+
+const INTERSLAVIC_ALPHABET = [
+  { id: 'A', display: 'A А', keys: ['a', 'а'] },
+  { id: 'B', display: 'B Б', keys: ['b', 'б'] },
+  { id: 'C', display: 'C Ц', keys: ['c', 'ц'] },
+  { id: 'Č', display: 'Č Ч', keys: ['č', 'ч'] },
+  { id: 'D', display: 'D Д', keys: ['d', 'д'], exclude: ['dž', 'дж'] },
+  { id: 'Dž', display: 'Dž Дж', keys: ['dž', 'дж'] },
+  { id: 'E', display: 'E Е', keys: ['e', 'е'] },
+  { id: 'Ě', display: 'Ě Є', keys: ['ě', 'є'] },
+  { id: 'F', display: 'F Ф', keys: ['f', 'ф'] },
+  { id: 'G', display: 'G Г', keys: ['g', 'г'] },
+  { id: 'H', display: 'H Х', keys: ['h', 'х'] },
+  { id: 'I', display: 'I И', keys: ['i', 'и'] },
+  { id: 'J', display: 'J Ј', keys: ['j', 'ј'] },
+  { id: 'K', display: 'K К', keys: ['k', 'к'] },
+  { id: 'L', display: 'L Л', keys: ['l', 'л'], exclude: ['lj'] },
+  { id: 'Lj', display: 'Lj Љ', keys: ['lj', 'љ'] },
+  { id: 'M', display: 'M М', keys: ['m', 'м'] },
+  { id: 'N', display: 'N Н', keys: ['n', 'н'], exclude: ['nj'] },
+  { id: 'Nj', display: 'Nj Њ', keys: ['nj', 'њ'] },
+  { id: 'O', display: 'O О', keys: ['o', 'о'] },
+  { id: 'P', display: 'P П', keys: ['p', 'п'] },
+  { id: 'R', display: 'R Р', keys: ['r', 'р'] },
+  { id: 'S', display: 'S С', keys: ['s', 'с'] },
+  { id: 'Š', display: 'Š Ш', keys: ['š', 'ш'] },
+  { id: 'T', display: 'T Т', keys: ['t', 'т'] },
+  { id: 'U', display: 'U У', keys: ['u', 'у'] },
+  { id: 'V', display: 'V В', keys: ['v', 'в'] },
+  { id: 'Y', display: 'Y Ы', keys: ['y', 'ы'] },
+  { id: 'Z', display: 'Z З', keys: ['z', 'з'] },
+  { id: 'Ž', display: 'Ž Ж', keys: ['ž', 'ж'] },
+];
+
+function App() {
+  const [articlesData, setArticlesData] = useState(() => {
+    const cached = localStorage.getItem('cachedArticles');
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch (e) {
+        console.error('Failed to parse cached articles', e);
+      }
+    }
+    return initialArticlesData;
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
+  const [activeLetter, setActiveLetter] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState('');
+  const [selectedArticle, setSelectedArticle] = useState(null);
+  const [showStatistics, setShowStatistics] = useState(false);
+  const [calendarDataLive, setCalendarDataLive] = useState(() => {
+    const cached = localStorage.getItem('cachedCalendarData');
+    if (cached) {
+      try { return JSON.parse(cached); } catch (e) { console.error('Failed to parse cached calendar data', e); }
+    }
+    return null;
+  });
+  const [statsDataLive, setStatsDataLive] = useState(() => {
+    const cached = localStorage.getItem('cachedStatsData');
+    if (cached) {
+      try { return JSON.parse(cached); } catch (e) { console.error('Failed to parse cached stats data', e); }
+    }
+    return null;
+  });
+  const [lang, setLang] = useState('en');
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [categorySearch, setCategorySearch] = useState('');
+  const [categorySortOrder, setCategorySortOrder] = useState('desc'); // 'desc' for most to least, 'asc' for least to most
+  const [showOnlyWellWritten, setShowOnlyWellWritten] = useState(false);
+
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      setIsDarkMode(true);
+      document.documentElement.classList.add('dark');
+    }
+  }, []);
+
+  const toggleTheme = () => {
+    setIsDarkMode(prev => {
+      const newMode = !prev;
+      if (newMode) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+      return newMode;
+    });
+  };
+
+  const t = (key) => {
+    return translations[lang][key] || key;
+  };
+
+  // Compute categories and counts
+  const categories = useMemo(() => {
+    const catMap = new Map();
+
+    // Default "All" category
+    catMap.set('All', articlesData.length);
+
+    articlesData.forEach(article => {
+      if (article.cleanCategories && article.cleanCategories.length > 0) {
+        article.cleanCategories.forEach(cat => {
+          catMap.set(cat, (catMap.get(cat) || 0) + 1);
+        });
+      } else {
+        catMap.set('Uncategorized', (catMap.get('Uncategorized') || 0) + 1);
+      }
+    });
+
+    // Sort categories
+    let sorted = Array.from(catMap.entries());
+
+    // Sort logic
+    sorted.sort((a, b) => {
+      if (a[0] === 'All') return -1;
+      if (b[0] === 'All') return 1;
+      if (categorySortOrder === 'desc') {
+        return b[1] - a[1];
+      } else {
+        return a[1] - b[1];
+      }
+    });
+
+    return sorted;
+  }, [articlesData, categorySortOrder]);
+
+  // Filter categories by search
+  const filteredCategories = useMemo(() => {
+    let result = categories;
+
+    if (showOnlyWellWritten) {
+      result = result.filter(([cat]) =>
+        cat === 'Članky s zvězdoju' || cat === 'Članky s prověrjenym pravopisom'
+      );
+    }
+
+    if (!categorySearch.trim()) return result;
+
+    const searchLower = categorySearch.toLowerCase();
+    return result.filter(([cat]) => {
+      if (cat === 'All' || cat === 'Uncategorized') {
+        return t(cat === 'All' ? 'allArticles' : 'uncategorized').toLowerCase().includes(searchLower) || cat.toLowerCase().includes(searchLower);
+      }
+      return cat.replace(/_/g, ' ').toLowerCase().includes(searchLower);
+    });
+  }, [categories, categorySearch, t, showOnlyWellWritten]);
+
+  // Setup Fuse.js for search
+  const fuse = useMemo(() => {
+    return new Fuse(articlesData, {
+      keys: ['cleanTitle'],
+      threshold: 0.3,
+    });
+  }, [articlesData]);
+
+  // Filter articles based on search term and category
+  const filteredArticles = useMemo(() => {
+    let result = articlesData;
+
+    if (searchTerm) {
+      const searchResults = fuse.search(searchTerm);
+      result = searchResults.map(r => r.item);
+    }
+
+    if (activeCategory !== 'All') {
+      result = result.filter(article => {
+        if (activeCategory === 'Uncategorized') {
+          return !article.cleanCategories || article.cleanCategories.length === 0;
+        }
+        return article.cleanCategories && article.cleanCategories.includes(activeCategory);
+      });
+    }
+
+    if (activeLetter) {
+      const letterObj = INTERSLAVIC_ALPHABET.find(l => l.id === activeLetter);
+      if (letterObj) {
+        result = result.filter(article => {
+          const t = article.cleanTitle.toLowerCase();
+          const startsWithInclude = letterObj.keys.some(k => t.startsWith(k));
+          const startsWithExclude = letterObj.exclude ? letterObj.exclude.some(ek => t.startsWith(ek)) : false;
+          return startsWithInclude && !startsWithExclude;
+        });
+      }
+    }
+
+    // Sort alphabetically by cleanTitle if no search term, otherwise keep Fuse relevance sort
+    if (!searchTerm) {
+      result = [...result].sort((a, b) => a.cleanTitle.localeCompare(b.cleanTitle));
+    }
+
+    return result;
+  }, [searchTerm, activeCategory, activeLetter, fuse, articlesData]);
+
+  // Fetch all revisions for each page to compute user stats and calendar data
+  const fetchUserAndCalendarStats = async (pages) => {
+    const userStats = {};
+    const calendarStats = {};
+
+    const initUser = (user) => {
+      if (!userStats[user]) {
+        userStats[user] = { edits: 0, articlesCreated: 0, pagesCreated: 0, volumeAdded: 0 };
+      }
+    };
+
+    const API_URL = 'https://incubator.wikimedia.org/w/api.php';
+    const concurrency = 3;
+    let currentIndex = 0;
+    let processed = 0;
+
+    const worker = async () => {
+      while (currentIndex < pages.length) {
+        const index = currentIndex++;
+        const page = pages[index];
+
+        let rvcontinue = null;
+        let previousSize = 0;
+        let isFirstRevOfPage = true;
+
+        while (true) {
+          const url = new URL(API_URL);
+          url.searchParams.set('action', 'query');
+          url.searchParams.set('prop', 'revisions');
+          url.searchParams.set('titles', page.title);
+          url.searchParams.set('rvprop', 'user|size|timestamp');
+          url.searchParams.set('rvlimit', 'max');
+          url.searchParams.set('rvdir', 'newer');
+          url.searchParams.set('format', 'json');
+          url.searchParams.set('origin', '*');
+          if (rvcontinue) url.searchParams.set('rvcontinue', rvcontinue);
+
+          try {
+            const res = await fetch(url.toString());
+            const data = await res.json();
+
+            if (data.query && data.query.pages) {
+              const pageData = Object.values(data.query.pages)[0];
+              if (pageData.revisions) {
+                for (const rev of pageData.revisions) {
+                  const user = rev.user || 'Unknown';
+                  initUser(user);
+
+                  userStats[user].edits += 1;
+
+                  const currentSize = rev.size || 0;
+                  const sizeDiff = currentSize - previousSize;
+                  if (sizeDiff > 0) {
+                    userStats[user].volumeAdded += sizeDiff;
+                  }
+                  previousSize = currentSize;
+
+                  // Calendar tracking
+                  const timestamp = rev.timestamp;
+                  if (timestamp) {
+                    const dateObj = new Date(timestamp);
+                    const monthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+
+                    if (!calendarStats[monthKey]) {
+                      calendarStats[monthKey] = {
+                        activeUsers: new Set(),
+                        userEdits: {},
+                        newArticles: []
+                      };
+                    }
+
+                    calendarStats[monthKey].activeUsers.add(user);
+                    calendarStats[monthKey].userEdits[user] = (calendarStats[monthKey].userEdits[user] || 0) + 1;
+
+                    if (isFirstRevOfPage && page.ns === 0) {
+                      let cleanTitle = page.title.replace('Wp/isv/', '').replace(/_/g, ' ');
+                      calendarStats[monthKey].newArticles.push({
+                        title: cleanTitle,
+                        author: user,
+                        size: currentSize,
+                        timestamp: timestamp
+                      });
+                    }
+                  }
+
+                  if (isFirstRevOfPage) {
+                    isFirstRevOfPage = false;
+                    if (page.ns === 0) {
+                      userStats[user].articlesCreated += 1;
+                    }
+                    userStats[user].pagesCreated += 1;
+                  }
+                }
+              }
+            }
+
+            if (data.continue && data.continue.rvcontinue) {
+              rvcontinue = data.continue.rvcontinue;
+            } else {
+              break;
+            }
+          } catch (e) {
+            console.error(`Failed to fetch revisions for ${page.title}:`, e);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+
+        processed++;
+        if (processed % 50 === 0 || processed === pages.length) {
+          setRefreshStatus(`Fetching revisions: ${processed}/${pages.length} pages...`);
+        }
+      }
+    };
+
+    const workers = Array(concurrency).fill(null).map(() => worker());
+    await Promise.all(workers);
+
+    // Format user stats
+    const statsArray = Object.entries(userStats)
+      .map(([username, stats]) => ({ username, ...stats }))
+      .filter(u => u.username !== 'Unknown' && !u.username.includes('bot') && !u.username.includes('Bot'))
+      .sort((a, b) => b.edits - a.edits);
+
+    // Format calendar data
+    const formattedCalendar = Object.entries(calendarStats)
+      .map(([month, data]) => {
+        const validUsers = Array.from(data.activeUsers)
+          .filter(u => u !== 'Unknown' && !u.includes('bot') && !u.includes('Bot'));
+
+        let active10Plus = 0;
+        validUsers.forEach(u => {
+          if (data.userEdits[u] >= 10) {
+            active10Plus++;
+          }
+        });
+
+        return {
+          month,
+          activeUsers: validUsers,
+          activeUsers10Plus: active10Plus,
+          newArticles: data.newArticles.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        };
+      })
+      .sort((a, b) => b.month.localeCompare(a.month));
+
+    return { statsArray, formattedCalendar };
+  };
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    setRefreshStatus('Fetching article list...');
+
+    try {
+      const API_URL = 'https://incubator.wikimedia.org/w/api.php';
+      let pages = [];
+      let apcontinue = null;
+
+      while (true) {
+        // ... (API fetch logic remains completely unchanged, removing from replace block purely for mapping safety)
+        const url = new URL(API_URL);
+        url.searchParams.set('action', 'query');
+        url.searchParams.set('list', 'allpages');
+        url.searchParams.set('apprefix', 'Wp/isv/');
+        url.searchParams.set('apnamespace', '0');
+        url.searchParams.set('aplimit', '500');
+        url.searchParams.set('format', 'json');
+        url.searchParams.set('origin', '*'); // required for CORS
+        if (apcontinue) {
+          url.searchParams.set('apcontinue', apcontinue);
+        }
+
+        const res = await fetch(url.toString()); // continue logic unchanged
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error.info || 'API Error');
+
+        if (data.query && data.query.allpages) {
+          pages.push(...data.query.allpages);
+        }
+
+        if (data.continue && data.continue.apcontinue) {
+          apcontinue = data.continue.apcontinue;
+        } else {
+          break;
+        }
+      }
+
+      setRefreshStatus(`Fetching categories for ${pages.length} articles...`);
+      const chunkSize = 50;
+
+      for (let i = 0; i < pages.length; i += chunkSize) {
+        setRefreshStatus(`Processing categories: ${Math.min(i + chunkSize, pages.length)} / ${pages.length}`);
+        const chunk = pages.slice(i, i + chunkSize);
+        const titles = chunk.map(p => p.title).join('|');
+
+        const url = new URL(API_URL);
+        url.searchParams.set('action', 'query');
+        url.searchParams.set('prop', 'categories|info');
+        url.searchParams.set('titles', titles);
+        url.searchParams.set('cllimit', 'max');
+        url.searchParams.set('format', 'json');
+        url.searchParams.set('origin', '*');
+
+        const res = await fetch(url.toString());
+        const data = await res.json();
+
+        if (data.query && data.query.pages) {
+          const pageMap = data.query.pages;
+          Object.values(pageMap).forEach(pInfo => {
+            const pageRef = pages.find(p => p.title === pInfo.title);
+            if (pageRef) {
+              pageRef.categories = (pInfo.categories || []).map(c => c.title);
+              pageRef.size = pInfo.length || 0;
+              pageRef.timestamp = pInfo.touched || new Date().toISOString();
+            }
+          });
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+
+      // Fetch revisions for user stats and calendar data
+      setRefreshStatus('Fetching revisions for user stats and calendar...');
+      const pagesForStats = pages.map(p => ({ ...p, ns: 0 })); // All pages here are namespace 0
+      const { statsArray, formattedCalendar } = await fetchUserAndCalendarStats(pagesForStats);
+
+      setStatsDataLive(statsArray);
+      setCalendarDataLive(formattedCalendar);
+
+      pages.forEach(p => {
+        p.cleanTitle = p.title.replace('Wp/isv/', '');
+        p.cleanCategories = (p.categories || []).map(cat => {
+          return cat.replace(/^Category:(Wp\/isv\/)?/, '');
+        }).filter(c => !c.match(/incubator/i) && !c.match(/articles/i));
+      });
+
+      const validPages = pages.filter(p => !p.cleanTitle.includes('O_Wikipediji') && !p.cleanTitle.includes('Glavna_stranica'));
+
+      setArticlesData(validPages);
+      try {
+        localStorage.setItem('cachedArticles', JSON.stringify(validPages));
+        localStorage.setItem('cachedStatsData', JSON.stringify(statsArray));
+        localStorage.setItem('cachedCalendarData', JSON.stringify(formattedCalendar));
+      } catch (e) {
+        console.error('Failed to cache data', e);
+      }
+      setRefreshStatus('');
+    } catch (e) {
+      console.error(e);
+      setRefreshStatus(t('errorRefreshing'));
+      setTimeout(() => setRefreshStatus(''), 3000);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  if (showStatistics) {
+    return <StatisticsModal onClose={() => setShowStatistics(false)} t={t} articlesData={articlesData} calendarDataLive={calendarDataLive} statsDataLive={statsDataLive} />;
+  }
+
+  return (
+    <div className="app-container">
+      <header className="header" style={{ position: 'relative' }}>
+        <div className="header-top-row">
+          <div className="language-toggle">
+            <button className={`lang-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => setLang('en')}>English</button>
+            <button className={`lang-btn ${lang === 'isv-lat' ? 'active' : ''}`} onClick={() => setLang('isv-lat')}>Medžuslovjansky</button>
+            <button className={`lang-btn ${lang === 'isv-cyr' ? 'active' : ''}`} onClick={() => setLang('isv-cyr')}>Меджусловјанскы</button>
+
+            <button className="lang-btn theme-toggle" onClick={toggleTheme} style={{ marginLeft: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Toggle Light/Dark Theme">
+              {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+          </div>
+          <button
+            className="needed-articles-link"
+            onClick={() => setSelectedArticle({
+              title: "Wp/isv/Incubator:Članky,_ktore_trěba_imati_v_enciklopediji",
+              cleanTitle: "Članky, koje jest potrěbno napisati"
+            })}
+          >
+            <AlertCircle size={14} />
+            <span>{t('neededArticles')}</span>
+          </button>
+        </div>
+
+        <h1>{t('wikiTitle')}</h1>
+        <p>{t('wikiSubtitle')}</p>
+        <div className="header-actions">
+          <button
+            className={`refresh-btn ${isRefreshing ? 'refreshing' : ''}`}
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+          >
+            <RefreshCw size={16} className={isRefreshing ? 'spin' : ''} />
+            {isRefreshing ? refreshStatus || t('refreshing') : t('refreshList')}
+          </button>
+          <button
+            className="refresh-btn nav-btn"
+            onClick={() => setShowStatistics(true)}
+          >
+            <TrendingUp size={16} /> {t('statistics')}
+          </button>
+        </div>
+      </header>
+
+      {/* Modern Search Bar */}
+      <div className="search-container">
+        <div className="search-wrapper">
+          <Search className="search-icon" />
+          <input
+            type="text"
+            className="search-input"
+            placeholder={t('searchPlaceholder')}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Alphabet Filter Bar */}
+      <div className="alphabet-container fade-in">
+        <button
+          className={`alphabet-btn ${activeLetter === null ? 'active' : ''}`}
+          onClick={() => setActiveLetter(null)}
+        >
+          All
+        </button>
+        {INTERSLAVIC_ALPHABET.map(letter => (
+          <button
+            key={letter.id}
+            className={`alphabet-btn ${activeLetter === letter.id ? 'active' : ''}`}
+            onClick={() => setActiveLetter(letter.id)}
+          >
+            {letter.display}
+          </button>
+        ))}
+      </div>
+
+      {selectedArticle ? (
+        <div className="article-view-container fade-in">
+          <div className="article-view-header">
+            <button className="nav-btn back-btn" onClick={() => setSelectedArticle(null)}>
+              ← {t('backToSearch')}
+            </button>
+            <div className="article-view-title">{selectedArticle.cleanTitle.replace(/_/g, ' ')}</div>
+            <a
+              href={`https://incubator.wikimedia.org/wiki/${selectedArticle.title}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="nav-btn external-btn"
+            >
+              {t('openInIncubator')} <ExternalLink size={14} style={{ display: 'inline', verticalAlign: 'middle', marginBottom: '2px' }} />
+            </a>
+          </div>
+          <iframe
+            src={`https://incubator.wikimedia.org/wiki/${selectedArticle.title}`}
+            title={selectedArticle.cleanTitle}
+            className="article-iframe"
+          />
+        </div>
+      ) : (
+        <main className="main-content">
+          {/* Category Sidebar */}
+          <aside className="category-sidebar">
+            <div className="category-title fade-in">
+              <Layers size={18} style={{ display: 'inline', marginRight: '8px', verticalAlign: 'text-bottom' }} />
+              {t('categoriesTitle')}
+            </div>
+
+            <div className="category-controls fade-in">
+              <div className="category-search">
+                <Search size={14} className="category-search-icon" />
+                <input
+                  type="text"
+                  placeholder={t('categorySearchPlaceholder')}
+                  value={categorySearch}
+                  onChange={(e) => setCategorySearch(e.target.value)}
+                  className="category-search-input"
+                />
+              </div>
+
+              <div className="category-sort">
+                <select
+                  value={categorySortOrder}
+                  onChange={(e) => setCategorySortOrder(e.target.value)}
+                  className="category-sort-select"
+                >
+                  <option value="desc">{t('sortMost')}</option>
+                  <option value="asc">{t('sortLeast')}</option>
+                </select>
+              </div>
+
+              <div className="well-written-toggle">
+                <label className="well-written-label">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyWellWritten}
+                    onChange={(e) => {
+                      setShowOnlyWellWritten(e.target.checked);
+                      if (e.target.checked) {
+                        setActiveCategory('All');
+                      }
+                    }}
+                  />
+                  <span>🌟 {t('wellWritten')}</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="category-list">
+              {filteredCategories.map(([cat, count], index) => (
+                <button
+                  key={cat}
+                  className={`category-pill fade-in ${activeCategory === cat ? 'active' : ''}`}
+                  style={{ animationDelay: `${index * 0.03}s` }}
+                  onClick={() => setActiveCategory(cat)}
+                >
+                  <span>{cat === 'All' ? t('allArticles') : cat === 'Uncategorized' ? t('uncategorized') : cat.replace(/_/g, ' ')}</span>
+                  <span className="count">{count}</span>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          {/* Article Grid Layout */}
+          <section className="article-grid-container fade-in">
+            <div className="grid-header">
+              <h2 className="grid-title">
+                {activeCategory === 'All' ? t('allArticles') : activeCategory === 'Uncategorized' ? t('uncategorized') : activeCategory.replace(/_/g, ' ')}
+              </h2>
+              <span className="article-count-label">
+                {filteredArticles.length} {filteredArticles.length === 1 ? t('articleFound') : t('articlesFound')}
+              </span>
+            </div>
+
+            {filteredArticles.length > 0 ? (
+              <div className="article-grid">
+                {filteredArticles.map((article, index) => (
+                  <a
+                    href={`https://incubator.wikimedia.org/wiki/${article.title}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="article-card"
+                    key={article.pageid}
+                    style={{ animation: `fadeInDown 0.5s ease-out ${index * 0.02}s both` }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setSelectedArticle(article);
+                    }}
+                  >
+                    <ExternalLink className="external-link-icon" size={20} />
+                    <h3 className="article-title">{article.cleanTitle.replace(/_/g, ' ')}</h3>
+
+                    <div className="card-categories">
+                      {article.cleanCategories && article.cleanCategories.slice(0, 3).map(cat => (
+                        <span className="card-category-tag" key={cat}>
+                          {cat.replace(/_/g, ' ')}
+                        </span>
+                      ))}
+                      {(!article.cleanCategories || article.cleanCategories.length === 0) && (
+                        <span className="card-category-tag" style={{ color: 'var(--text-muted)', background: 'var(--card-border)' }}>
+                          {t('uncategorized')}
+                        </span>
+                      )}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <BookOpen className="empty-state-icon" />
+                <h3>{t('noArticlesFound')}</h3>
+                <p>{t('noArticlesDesc')}</p>
+              </div>
+            )}
+          </section>
+        </main>
+      )}
+    </div>
+  );
+}
+
+export default App;
