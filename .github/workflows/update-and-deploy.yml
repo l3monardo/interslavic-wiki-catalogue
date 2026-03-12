@@ -44,7 +44,7 @@ jobs:
         run: npm run build
 
       - name: Deploy to Hostinger via SSH
-        uses: easingthemes/ssh-deploy@v5
+        uses: easingthemes/ssh-deploy@v5.1.1
         with:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
