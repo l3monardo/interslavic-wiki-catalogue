@@ -202,153 +202,7 @@ function App() {
     return result;
   }, [searchTerm, activeCategory, activeLetter, fuse, articlesData]);
 
-  // Fetch all revisions for each page to compute user stats and calendar data
-  const fetchUserAndCalendarStats = async (pages) => {
-    const userStats = {};
-    const calendarStats = {};
-
-    const initUser = (user) => {
-      if (!userStats[user]) {
-        userStats[user] = { edits: 0, articlesCreated: 0, pagesCreated: 0, volumeAdded: 0 };
-      }
-    };
-
-    const API_URL = 'https://incubator.wikimedia.org/w/api.php';
-    const concurrency = 3;
-    let currentIndex = 0;
-    let processed = 0;
-
-    const worker = async () => {
-      while (currentIndex < pages.length) {
-        const index = currentIndex++;
-        const page = pages[index];
-
-        let rvcontinue = null;
-        let previousSize = 0;
-        let isFirstRevOfPage = true;
-
-        while (true) {
-          const url = new URL(API_URL);
-          url.searchParams.set('action', 'query');
-          url.searchParams.set('prop', 'revisions');
-          url.searchParams.set('titles', page.title);
-          url.searchParams.set('rvprop', 'user|size|timestamp');
-          url.searchParams.set('rvlimit', 'max');
-          url.searchParams.set('rvdir', 'newer');
-          url.searchParams.set('format', 'json');
-          url.searchParams.set('origin', '*');
-          if (rvcontinue) url.searchParams.set('rvcontinue', rvcontinue);
-
-          try {
-            const res = await fetch(url.toString());
-            const data = await res.json();
-
-            if (data.query && data.query.pages) {
-              const pageData = Object.values(data.query.pages)[0];
-              if (pageData.revisions) {
-                for (const rev of pageData.revisions) {
-                  const user = rev.user || 'Unknown';
-                  initUser(user);
-
-                  userStats[user].edits += 1;
-
-                  const currentSize = rev.size || 0;
-                  const sizeDiff = currentSize - previousSize;
-                  if (sizeDiff > 0) {
-                    userStats[user].volumeAdded += sizeDiff;
-                  }
-                  previousSize = currentSize;
-
-                  // Calendar tracking
-                  const timestamp = rev.timestamp;
-                  if (timestamp) {
-                    const dateObj = new Date(timestamp);
-                    const monthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
-
-                    if (!calendarStats[monthKey]) {
-                      calendarStats[monthKey] = {
-                        activeUsers: new Set(),
-                        userEdits: {},
-                        newArticles: []
-                      };
-                    }
-
-                    calendarStats[monthKey].activeUsers.add(user);
-                    calendarStats[monthKey].userEdits[user] = (calendarStats[monthKey].userEdits[user] || 0) + 1;
-
-                    if (isFirstRevOfPage && page.ns === 0) {
-                      let cleanTitle = page.title.replace('Wp/isv/', '').replace(/_/g, ' ');
-                      calendarStats[monthKey].newArticles.push({
-                        title: cleanTitle,
-                        author: user,
-                        size: currentSize,
-                        timestamp: timestamp
-                      });
-                    }
-                  }
-
-                  if (isFirstRevOfPage) {
-                    isFirstRevOfPage = false;
-                    if (page.ns === 0) {
-                      userStats[user].articlesCreated += 1;
-                    }
-                    userStats[user].pagesCreated += 1;
-                  }
-                }
-              }
-            }
-
-            if (data.continue && data.continue.rvcontinue) {
-              rvcontinue = data.continue.rvcontinue;
-            } else {
-              break;
-            }
-          } catch (e) {
-            console.error(`Failed to fetch revisions for ${page.title}:`, e);
-            await new Promise(r => setTimeout(r, 2000));
-          }
-        }
-
-        processed++;
-        if (processed % 50 === 0 || processed === pages.length) {
-          setRefreshStatus(`Fetching revisions: ${processed}/${pages.length} pages...`);
-        }
-      }
-    };
-
-    const workers = Array(concurrency).fill(null).map(() => worker());
-    await Promise.all(workers);
-
-    // Format user stats
-    const statsArray = Object.entries(userStats)
-      .map(([username, stats]) => ({ username, ...stats }))
-      .filter(u => u.username !== 'Unknown' && !u.username.includes('bot') && !u.username.includes('Bot'))
-      .sort((a, b) => b.edits - a.edits);
-
-    // Format calendar data
-    const formattedCalendar = Object.entries(calendarStats)
-      .map(([month, data]) => {
-        const validUsers = Array.from(data.activeUsers)
-          .filter(u => u !== 'Unknown' && !u.includes('bot') && !u.includes('Bot'));
-
-        let active10Plus = 0;
-        validUsers.forEach(u => {
-          if (data.userEdits[u] >= 10) {
-            active10Plus++;
-          }
-        });
-
-        return {
-          month,
-          activeUsers: validUsers,
-          activeUsers10Plus: active10Plus,
-          newArticles: data.newArticles.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        };
-      })
-      .sort((a, b) => b.month.localeCompare(a.month));
-
-    return { statsArray, formattedCalendar };
-  };
+  // The heavy client-side stats calculator has been removed in favor of a real-time PHP API.
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
@@ -431,7 +285,6 @@ function App() {
 
       setStatsDataLive(statsArray);
       setCalendarDataLive(formattedCalendar);
-
       pages.forEach(p => {
         p.cleanTitle = p.title.replace('Wp/isv/', '');
         p.cleanCategories = (p.categories || []).map(cat => {
@@ -444,11 +297,28 @@ function App() {
       setArticlesData(validPages);
       try {
         localStorage.setItem('cachedArticles', JSON.stringify(validPages));
-        localStorage.setItem('cachedStatsData', JSON.stringify(statsArray));
-        localStorage.setItem('cachedCalendarData', JSON.stringify(formattedCalendar));
       } catch (e) {
-        console.error('Failed to cache data', e);
+        console.error('Failed to cache articles data', e);
       }
+
+      setRefreshStatus('Fetching real-time statistics...');
+
+      try {
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getStats' : '/api.php?action=getStats';
+        const response = await fetch(apiUrl);
+        if (response.ok) {
+          const dbData = await response.json();
+          if (dbData.users && dbData.calendar) {
+            setStatsDataLive(dbData.users);
+            setCalendarDataLive(dbData.calendar);
+            localStorage.setItem('cachedStatsData', JSON.stringify(dbData.users));
+            localStorage.setItem('cachedCalendarData', JSON.stringify(dbData.calendar));
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch API stats (are you running locally without PHP?)", err);
+      }
+
       setRefreshStatus('');
     } catch (e) {
       console.error(e);

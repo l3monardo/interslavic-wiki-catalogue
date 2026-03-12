@@ -4,6 +4,38 @@ import path from 'path';
 const API_URL = 'https://incubator.wikimedia.org/w/api.php';
 const NAMESPACES = [0, 10, 14, 828]; // Main, Template, Category, Module
 
+const fetchWithRetry = async (url, options = {}, retries = 5, backoff = 2000) => {
+    const headers = {
+        'User-Agent': 'InterslavicWikiCatalogueBot/1.0 (https://github.com/l3monardo/interslavic-wiki-catalogue; gleb@example.com)',
+        ...options.headers
+    };
+
+    for (let i = 0; i < retries; i++) {
+        try {
+            const res = await fetch(url, { ...options, headers });
+
+            if (res.status === 429 || res.status >= 500) {
+                throw new Error(`HTTP Error ${res.status}`);
+            }
+
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch (parseError) {
+                if (text.trim().startsWith('<!DOCTYPE')) {
+                    throw new Error('Received HTML instead of JSON (Rate limit or API error)');
+                }
+                throw parseError;
+            }
+        } catch (err) {
+            if (i === retries - 1) throw err;
+            const wait = backoff * Math.pow(2, i);
+            console.warn(`Attempt ${i + 1} failed for ${url}. Retrying in ${wait}ms... Error: ${err.message}`);
+            await new Promise(r => setTimeout(r, wait));
+        }
+    }
+};
+
 async function fetchAllPages() {
     let allPages = [];
 
@@ -22,8 +54,7 @@ async function fetchAllPages() {
                 url.searchParams.set('apcontinue', apcontinue);
             }
 
-            const res = await fetch(url.toString());
-            const data = await res.json();
+            const data = await fetchWithRetry(url.toString());
 
             if (data.error) {
                 console.error('API Error:', data.error);
@@ -54,7 +85,7 @@ async function fetchStatsForPages(pages) {
         }
     };
 
-    const concurrency = 3;
+    const concurrency = 2; // Reduced concurrency to be gentler on the API
     let currentIndex = 0;
 
     const worker = async () => {
@@ -78,8 +109,9 @@ async function fetchStatsForPages(pages) {
                 if (rvcontinue) url.searchParams.set('rvcontinue', rvcontinue);
 
                 try {
-                    const res = await fetch(url.toString());
-                    const data = await res.json();
+                    const data = await fetchWithRetry(url.toString());
+                    // Small delay between requests to be nice
+                    await new Promise(r => setTimeout(r, 100));
 
                     if (data.query && data.query.pages) {
                         const pageData = Object.values(data.query.pages)[0];
