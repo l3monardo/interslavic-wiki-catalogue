@@ -30,7 +30,11 @@ async function main() {
         queueLimit: 0
     });
 
-    const es = new EventSource(STREAM_URL);
+    const es = new EventSource(STREAM_URL, {
+        headers: {
+            'User-Agent': 'InterslavicWikiCatalogueBot/1.0 (https://github.com/l3monardo/interslavic-wiki-catalogue; gleb@example.com)'
+        }
+    });
 
     es.onopen = () => {
         console.log('Connected to Wikimedia EventStream.');
