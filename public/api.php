@@ -21,12 +21,12 @@ if ($action === 'getStats') {
     $users_result = $conn->query($users_sql);
     $users = [];
     if ($users_result->num_rows > 0) {
-        while($row = $users_result->fetch_assoc()) {
+        while ($row = $users_result->fetch_assoc()) {
             // Cast numeric strings back to ints
-            $row['edits'] = (int)$row['edits'];
-            $row['articlesCreated'] = (int)$row['articlesCreated'];
-            $row['pagesCreated'] = (int)$row['pagesCreated'];
-            $row['volumeAdded'] = (int)$row['volumeAdded'];
+            $row['edits'] = (int) $row['edits'];
+            $row['articlesCreated'] = (int) $row['articlesCreated'];
+            $row['pagesCreated'] = (int) $row['pagesCreated'];
+            $row['volumeAdded'] = (int) $row['volumeAdded'];
             $users[] = $row;
         }
     }
@@ -36,10 +36,10 @@ if ($action === 'getStats') {
     $calendar_result = $conn->query($calendar_sql);
     $calendar = [];
     if ($calendar_result->num_rows > 0) {
-        while($row = $calendar_result->fetch_assoc()) {
+        while ($row = $calendar_result->fetch_assoc()) {
             $row['activeUsers'] = json_decode($row['activeUsers']);
-            $row['activeUsers10Plus'] = (int)$row['activeUsers10Plus'];
-            
+            $row['activeUsers10Plus'] = (int) $row['activeUsers10Plus'];
+
             // Re-attach new articles for this month
             $monthStart = $row['month'] . '-01T00:00:00Z';
             $monthEnd = $row['month'] . '-31T23:59:59Z'; // generous end
@@ -47,8 +47,8 @@ if ($action === 'getStats') {
             $art_result = $conn->query($art_sql);
             $newArticles = [];
             if ($art_result && $art_result->num_rows > 0) {
-                while($artRow = $art_result->fetch_assoc()) {
-                    $artRow['size'] = (int)$artRow['size'];
+                while ($artRow = $art_result->fetch_assoc()) {
+                    $artRow['size'] = (int) $artRow['size'];
                     $newArticles[] = $artRow;
                 }
             }
@@ -61,6 +61,18 @@ if ($action === 'getStats') {
         'users' => $users,
         'calendar' => $calendar
     ]);
+} elseif ($action === 'getRecentChanges') {
+    $sql = "SELECT title, user, timestamp, type, size_diff as sizeDiff, summary, is_bot as isBot FROM recent_changes ORDER BY timestamp DESC LIMIT 20";
+    $result = $conn->query($sql);
+    $changes = [];
+    if ($result && $result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $row['sizeDiff'] = (int) $row['sizeDiff'];
+            $row['isBot'] = (bool) $row['isBot'];
+            $changes[] = $row;
+        }
+    }
+    echo json_encode($changes);
 } else {
     echo json_encode(['error' => 'Invalid action']);
 }

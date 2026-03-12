@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import Fuse from 'fuse.js';
-import { Search, ExternalLink, BookOpen, Layers, RefreshCw, AlertCircle, TrendingUp, Moon, Sun } from 'lucide-react';
+import { Search, ExternalLink, BookOpen, Layers, RefreshCw, AlertCircle, TrendingUp, Moon, Sun, Activity, Clock, User as UserIcon } from 'lucide-react';
 import initialArticlesData from './data/articles.json';
 import StatisticsModal from './components/StatisticsModal';
 import { translations } from './translations';
@@ -77,12 +77,55 @@ function App() {
   const [categorySearch, setCategorySearch] = useState('');
   const [categorySortOrder, setCategorySortOrder] = useState('desc'); // 'desc' for most to least, 'asc' for least to most
   const [showOnlyWellWritten, setShowOnlyWellWritten] = useState(false);
+  const [recentChanges, setRecentChanges] = useState([]);
+  const [lastTickerUpdate, setLastTickerUpdate] = useState(null);
 
   useEffect(() => {
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
       setIsDarkMode(true);
       document.documentElement.classList.add('dark');
     }
+
+    // Initial stats fetch automatically on load
+    const fetchInitialStats = async () => {
+      try {
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getStats' : '/api.php?action=getStats';
+        const response = await fetch(apiUrl);
+        if (response.ok) {
+          const dbData = await response.json();
+          if (dbData.users && dbData.calendar) {
+            setStatsDataLive(dbData.users);
+            setCalendarDataLive(dbData.calendar);
+            localStorage.setItem('cachedStatsData', JSON.stringify(dbData.users));
+            localStorage.setItem('cachedCalendarData', JSON.stringify(dbData.calendar));
+          }
+        }
+      } catch (err) {
+        console.warn("Initial stats fetch failed:", err);
+      }
+    };
+
+    fetchInitialStats();
+
+    // Polling for recent changes every 15 seconds
+    const fetchRecentChanges = async () => {
+      try {
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getRecentChanges' : '/api.php?action=getRecentChanges';
+        const response = await fetch(apiUrl);
+        if (response.ok) {
+          const data = await response.json();
+          setRecentChanges(data);
+          setLastTickerUpdate(new Date());
+        }
+      } catch (err) {
+        console.warn("Recent changes fetch failed:", err);
+      }
+    };
+
+    fetchRecentChanges();
+    const interval = setInterval(fetchRecentChanges, 30000); // Poll every 30 seconds
+
+    return () => clearInterval(interval);
   }, []);
 
   const toggleTheme = () => {
@@ -499,6 +542,7 @@ function App() {
 
           {/* Article Grid Layout */}
           <section className="article-grid-container fade-in">
+            <LiveActivity changes={recentChanges} />
             <div className="grid-header">
               <h2 className="grid-title">
                 {activeCategory === 'All' ? t('allArticles') : activeCategory === 'Uncategorized' ? t('uncategorized') : activeCategory.replace(/_/g, ' ')}
@@ -554,5 +598,60 @@ function App() {
     </div>
   );
 }
+
+const LiveActivity = ({ changes }) => {
+  if (!changes || changes.length === 0) return null;
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-blue-100 dark:border-gray-700 overflow-hidden mb-8">
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 px-6 py-4 flex items-center justify-between">
+        <h3 className="text-white font-bold flex items-center gap-2">
+          <Activity size={18} className="animate-pulse" />
+          Live activity (Incubator)
+        </h3>
+        <span className="text-blue-100 text-xs font-medium px-2 py-1 bg-white/10 rounded-full backdrop-blur-sm">
+          Real-time updates
+        </span>
+      </div>
+      <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
+        {changes.map((change, idx) => (
+          <div key={idx} className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors group">
+            <div className="flex flex-col min-w-0 pr-4">
+              <span className="text-gray-900 dark:text-gray-100 font-medium truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                {change.title}
+              </span>
+              <div className="flex items-center gap-3 mt-1">
+                <span className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                  <UserIcon size={12} />
+                  {change.user}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                  <Clock size={12} />
+                  {new Date(change.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className={`text-xs font-bold px-2 py-0.5 rounded ${change.sizeDiff > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                change.sizeDiff < 0 ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
+                  'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-400'
+                }`}>
+                {change.sizeDiff > 0 ? '+' : ''}{change.sizeDiff}
+              </span>
+              <a
+                href={`https://incubator.wikimedia.org/wiki/Wp/isv/${change.title.replace(/ /g, '_')}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all opacity-0 group-hover:opacity-100"
+              >
+                <ExternalLink size={14} />
+              </a>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export default App;

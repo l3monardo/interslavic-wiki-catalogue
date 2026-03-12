@@ -126,6 +126,25 @@ async function main() {
                         [monthKey, JSON.stringify(activeUsers)]
                     );
 
+                    // 4. Record in Recent Changes
+                    await connection.execute(
+                        `INSERT INTO recent_changes (title, user, timestamp, type, size_diff, summary, is_bot)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        [cleanTitle, user, timestamp, type, sizeDiff, data.comment || '', isBot ? 1 : 0]
+                    );
+
+                    // 5. Cleanup old recent changes (keep only last 100)
+                    // We do this occasionally (e.g. 5% of the time) to save database overhead
+                    if (Math.random() < 0.05) {
+                        await connection.execute(
+                            `DELETE FROM recent_changes WHERE id NOT IN (
+                                SELECT id FROM (
+                                    SELECT id FROM recent_changes ORDER BY timestamp DESC LIMIT 100
+                                ) as tmp
+                            )`
+                        );
+                    }
+
                     await connection.commit();
                 } catch (err) {
                     await connection.rollback();
