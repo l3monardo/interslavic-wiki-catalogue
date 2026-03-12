@@ -89,7 +89,7 @@ function App() {
     // Initial stats fetch automatically on load
     const fetchInitialStats = async () => {
       try {
-        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getStats' : '/api.php?action=getStats';
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/stats_api.php?action=getStats' : '/stats_api.php?action=getStats';
         const response = await fetch(apiUrl);
         if (response.ok) {
           const dbData = await response.json();
@@ -110,7 +110,7 @@ function App() {
     // Polling for recent changes every 15 seconds
     const fetchRecentChanges = async () => {
       try {
-        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getRecentChanges' : '/api.php?action=getRecentChanges';
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/stats_api.php?action=getRecentChanges' : '/stats_api.php?action=getRecentChanges';
         const response = await fetch(apiUrl);
         if (response.ok) {
           const data = await response.json();
@@ -347,7 +347,7 @@ function App() {
       setRefreshStatus('Fetching real-time statistics...');
 
       try {
-        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/api.php?action=getStats' : '/api.php?action=getStats';
+        const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost/stats_api.php?action=getStats' : '/stats_api.php?action=getStats';
         const response = await fetch(apiUrl);
         if (response.ok) {
           const dbData = await response.json();
