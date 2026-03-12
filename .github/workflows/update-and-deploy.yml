@@ -29,8 +29,8 @@ jobs:
       - name: Fetch latest articles
         run: node scripts/fetch_articles.js
 
-      - name: Fetch latest stats & calendar data
-        run: node scripts/fetch_stats.js
+      # - name: Fetch latest stats & calendar data
+      #   run: node scripts/fetch_stats.js
 
       - name: Commit updated data (if changed)
         run: |
